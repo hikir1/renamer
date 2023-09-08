@@ -62,40 +62,43 @@ if "import" in code or "export" in code:
 
 ast = parse(code, esprima_config)
 
-for comment in ast.comments:
-    line = comment.loc.start
-    if len(ast.body) == 0:
-        break
-    nodes = list(ast.body)
-    node = ast.body[0]
-    while True:
-        node = nodes.pop(0)
-        if comment.loc.start.line < node.loc.start.line:
-            if not node.leadingComments:
-                node.leadingComments = []
-            node.leadingComments.append(comment)
-            break
-        elif not node.body or node.body == [] or len(nodes) == 0 \
-                or comment.loc.start.line == node.loc.start.line:
-            if not node.trailingComments:
-                node.trailingComments = []
-            node.trailingComments.append(comment)
-            break
-        elif comment.loc.start.line >= node.loc.start.line:
-            if comment.loc.end.line <= node.loc.end.line:
-                if node.body is list:
-                    nodes = list(node.body)
-                else:
-                    nodes = [node.body]
+def process_comments(ast):
+    for comment in ast.comments:
+        line = comment.loc.start
+        nodes = list(ast.body)
+        while True:
+            node = nodes.pop(0)
+            if comment.range[0] < node.range[0]:
+                if not node.leadingComments:
+                    node.leadingComments = []
+                node.leadingComments.append(comment)
+                break
+            elif (comment.range[0] > node.range[0] \
+                    and comment.range[0] < node.range[1] \
+                    and (not hasattr(node, "body") or node.body == [])) \
+                    or (comment.range[0] > node.range[1] and
+                            (len(nodes) == 0 or comment.loc.start.line == node.loc.end.line)):
+                if not node.trailingComments:
+                    node.trailingComments = []
+                node.trailingComments.append(comment)
+                break
+            elif comment.range[0] > node.range[0]:
+                if comment.range[0] < node.range[1]:
+                    if isinstance(node.body, list):
+                        nodes = list(node.body)
+                    else:
+                        nodes = [node.body]
+
+process_comments(ast)
 
 allnames = set()
 class IdVisitor(esprima.NodeVisitor):
     def visit_Identifier(self, id):
         allnames.add(id.name)
-        return self.visit_Generic(id)
+        return self.visit_Object(id)
     def visit_LabeledStatement(self, statement):
         allnames.add(statement.label)
-        return self.visit_Generic(statement)
+        return self.visit_Object(statement)
 
 IdVisitor().visit(ast)
 
@@ -222,10 +225,111 @@ def normalize():
                         attr[i] = Syntax.FunctionExpression(newId(), dec.init.params, dec.init.body, False)
                     nodestack.append(attr[i])
 
+import openai
+import os
+openai.organization = "org-XfD8N76UJAj6sSTJEGHqa3eg"
+openai.api_key = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = "gpt-4"
+OPENAI_MAX_TOKENS = 8192
+OPENAI_TEMPERATURE = 0.2
+
+
+def ai_add_comments(func):
+    code = escodegen.generate(func, escodegen_config)
+    max_tokens = int(len(code) * 2.6)
+    if max_tokens > OPENAI_MAX_TOKENS:
+        return
+    print(f"requesting comments for {func.id.name}...")
+    res = openai.ChatCompletion.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"Can you please add comments to the following JavaScript function? \
+                            Include a header with a general description of the function, arguments, \
+                            and return value. Don't comment every line.\n{code}\n",
+                },
+            ],
+            max_tokens=max_tokens,
+            temperature=OPENAI_TEMPERATURE,
+            )
+    code = res["choices"][0]["message"]["content"]
+    start = code.find("```")
+    start2 = code.find("\n", start)
+    end = code.find("```", start2)
+    if start != -1:
+        if start2 != -1 or end == -1 or start2 > end:
+            print(f"Failed to add comments to {func.id.name}")
+            return
+        code = code[start2 + 1:end]
+    func = esprima.parseScript(code, esprima_config)
+    process_comments(func)
+    return func
+
+def ai_suggest_name(func):
+    code = escodegen.generate(func, escodegen_config)
+    marker = "suggested name:"
+    max_tokens = len(code) * 1.4 + 20
+    if max_tokens > OPENAI_MAX_TOKENS:
+        print("Warning: Function is too big for ai to suggest name")
+        return func.id.name
+    res = openai.ChatCompletion.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"Can you please suggest a better name for the following JavaScript function? \
+                        Please precede the suggested name with '{marker}'.\n{code}\n",
+                },
+            ],
+            max_tokens=max_tokens,
+            temperature=OPENAI_TEMPERATURE,
+            )
+    name = res["choices"][0]["message"]["content"]
+    start = code.rfind(marker)
+    if start == -1:
+        print(f"Failed to get suggested function name")
+        return
+    name = name[start + len(marker):]
+    name = name.lstrip().split()[0]
+    name.strip("`'\"()")
+    return name
+
 uniquify()
 normalize()
 
-print("names after:", allnames)
+print("names after unqiue and normalize:", allnames)
+
+class FunctionCommentor(esprima.NodeVisitor):
+
+    @staticmethod
+    def handle_function(func):
+        newast = ai_add_comments(func)
+        newfunc = newast.body[0]
+        func.params = newfunc.params
+        func.body = newfunc.body
+        if hasattr(newfunc, "leadingComments"):
+            func.leadingComments = newfunc.leadingComments
+        if hasattr(newfunc, "trailingComments"):
+            func.trailingComments = newfunc.trailingComments
+
+    def visit_FunctionDeclaration(self, node):
+        FunctionCommentor.handle_function(node)
+        return super().visit_Object(node)
+
+    def visit_AsyncFunctionDeclaration(self, node):
+        FunctionCommentor.handle_function(node)
+        return super().visit_Object(node)
+
+    def visit_FunctionExpression(self, node):
+        FunctionCommentor.handle_function(node)
+        return super().visit_Object(node)
+
+    def visit_AsyncFunctionExpression(self, node):
+        FunctionCommentor.handle_function(node)
+        return super().visit_Object(node)
+
+FunctionCommentor().visit(ast)
 
 code = escodegen.generate(ast, escodegen_config)
 with open(sys.argv[2], "w") as f:
