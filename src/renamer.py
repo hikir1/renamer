@@ -269,7 +269,7 @@ def ai_add_comments(func):
 def ai_suggest_name(func):
     code = escodegen.generate(func, escodegen_config)
     marker = "suggested name:"
-    max_tokens = len(code) * 1.4 + 20
+    max_tokens = int(len(code) * 1.4 + 20)
     if max_tokens > OPENAI_MAX_TOKENS:
         print("Warning: Function is too big for ai to suggest name")
         return func.id.name
@@ -285,8 +285,9 @@ def ai_suggest_name(func):
             max_tokens=max_tokens,
             temperature=OPENAI_TEMPERATURE,
             )
+    print(f"\n\n\nres:\n\n{res}\n\n")
     name = res["choices"][0]["message"]["content"]
-    start = code.rfind(marker)
+    start = name.rfind(marker)
     if start == -1:
         print(f"Failed to get suggested function name")
         return
@@ -302,8 +303,7 @@ print("names after unqiue and normalize:", allnames)
 
 class FunctionCommentor(esprima.NodeVisitor):
 
-    @staticmethod
-    def handle_function(func):
+    def handle_function(self, func):
         newast = ai_add_comments(func)
         newfunc = newast.body[0]
         func.params = newfunc.params
@@ -314,22 +314,61 @@ class FunctionCommentor(esprima.NodeVisitor):
             func.trailingComments = newfunc.trailingComments
 
     def visit_FunctionDeclaration(self, node):
-        FunctionCommentor.handle_function(node)
+        self.handle_function(node)
         return super().visit_Object(node)
 
     def visit_AsyncFunctionDeclaration(self, node):
-        FunctionCommentor.handle_function(node)
+        self.handle_function(node)
         return super().visit_Object(node)
 
     def visit_FunctionExpression(self, node):
-        FunctionCommentor.handle_function(node)
+        self.handle_function(node)
         return super().visit_Object(node)
 
     def visit_AsyncFunctionExpression(self, node):
-        FunctionCommentor.handle_function(node)
+        self.handle_function(node)
         return super().visit_Object(node)
 
-FunctionCommentor().visit(ast)
+class FunctionRenamer(esprima.NodeVisitor):
+
+    class IdentifierUpdater(esprima.NodeVisitor):
+        def __init__(self, subs, *args, **kwargs):
+            self.subs = subs
+            super().__init__(*args, **kwargs)
+
+        def visit_Identifier(self, node):
+            if node.name in self.subs:
+                node.name = self.subs[node.name]
+            return super().visit_Object(node)
+
+
+    def visit(self, ast, *args, **kwargs):
+        self.subs = {}
+        super().visit(ast, *args, **kwargs)
+        FunctionRenamer.IdentifierUpdater(self.subs).visit(ast)
+
+    def handle_function(self, func):
+        name = ai_suggest_name(func)
+        self.subs[func.id.name] = name
+
+    def visit_FunctionDeclaration(self, node):
+        self.handle_function(node)
+        return super().visit_Object(node)
+
+    def visit_AsyncFunctionDeclaration(self, node):
+        self.handle_function(node)
+        return super().visit_Object(node)
+
+    def visit_FunctionExpression(self, node):
+        self.handle_function(node)
+        return super().visit_Object(node)
+
+    def visit_AsyncFunctionExpression(self, node):
+        self.handle_function(node)
+        return super().visit_Object(node)
+
+#FunctionCommentor().visit(ast)
+#FunctionRenamer().visit(ast)
 
 code = escodegen.generate(ast, escodegen_config)
 with open(sys.argv[2], "w") as f:
