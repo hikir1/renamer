@@ -159,7 +159,7 @@ def uniquify():
             scopes.append(Scope([]))
 
         if node.type == Syntax.FunctionExpression:
-            if hasattr(node, "id"):
+            if hasattr(node, "id") and node.id:
                 subName(node)
 
         if node.type == Syntax.FunctionDeclaration \
@@ -186,7 +186,44 @@ def uniquify():
             elif isinstance(attr, nodes.Node):
                 scopes[-1].nodes.append(attr)
 
+newIdCnt = 0
+def normalize():
+    nodestack = [ast]
+
+    def newId():
+        while True:
+            global newIdCnt
+            name = f"fe_{newIdCnt}"
+            newIdCnt += 1
+            if not name in allnames:
+                break
+        allnames.add(name)
+        return nodes.Identifier(name)
+
+    while len(nodestack) > 0:
+        node = nodestack.pop()
+
+        for sattr in dir(node):
+            attr = getattr(node, sattr)
+            if isinstance(attr, nodes.Node):
+                if attr.type == Syntax.FunctionExpression:
+                    if not hasattr(attr, "id") or not attr.id:
+                        attr.id = newId()
+                elif attr.type == Syntax.ArrowFunctionExpression:
+                    newattr = Syntax.FunctionExpression(newId(), dec.init.params, dec.init.body, False)
+                    setattr(node, sattr, newattr)
+                nodestack.append(attr)
+            elif isinstance(attr, list) and len(attr) > 0 and isinstance(attr[0], nodes.Node):
+                for i in range(len(attr)):
+                    if attr[i].type == Syntax.FunctionExpression:
+                        if not hasattr(attr[i], "id") or not attr[i].id:
+                            attr[i].id = newId()
+                    elif attr[i].type == Syntax.ArrowFunctionExpression:
+                        attr[i] = Syntax.FunctionExpression(newId(), dec.init.params, dec.init.body, False)
+                    nodestack.append(attr[i])
+
 uniquify()
+normalize()
 
 print("names after:", allnames)
 
