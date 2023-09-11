@@ -108,6 +108,10 @@ class Scope:
     def __init__(self, nodes):
         self.nodes = nodes
         self.subs = {}
+        self.lefts = set()
+
+    def __repr__(self):
+        return f"Scope(\n  {self.nodes}\n  {self.subs}\n)"
 
 def uniquify():
     scopes = [Scope([ast])]
@@ -118,7 +122,7 @@ def uniquify():
             scopes.pop()
         if len(scopes) == 0:
             break
-        
+
         node = scopes[-1].nodes.pop()
 
         def subName(node):
@@ -139,26 +143,46 @@ def uniquify():
             if node.left.type == Syntax.Identifier:
                 for scope in scopes[::-1]:
                     if node.left.name in scope.subs:
-                        scopes[-1].subs[node.left.name] = None
+                        # record left as resetting id association
+                        scopes[-1].lefts.add(node.id)
                         break
+            # make sure right is processed before left
+            scopes[-1].nodes += [node.left, node.right]
+            continue
 
         elif node.type == Syntax.VariableDeclarator:
             for scope in scopes[::-1]:
                 if node.id.name in scope.subs:
-                    scopes[-1].subs[node.id.name] = None
+                    # record left as resetting id association
+                    scopes[-1].lefts.add(node.id)
                     break
+            # make sure right is processed before left (if it exists)
+            scopes[-1].nodes.append(node.id)
+            if hasattr(node, "init") and node.init:
+                scopes[-1].nodes.append(node.init)
+            continue
+
+        elif node.type == Syntax.MemberExpression:
+            # only consider the object. ignore the property.
+            scopes[-1].nodes.append(node.object)
+            continue
 
         elif node.type == Syntax.FunctionDeclaration:
             subName(node)
 
         elif node.type == Syntax.Identifier:
-            for scope in scopes[::-1]:
-                if node.name in scope.subs:
-                    newname = scope.subs[node.name]
-                    if newname:
-                        node.name = newname
+            # if id was reset, ignore
+            if node in scopes[-1].lefts:
+                scopes[-1].subs[node.name] = None
+                scopes[-1].lefts.remove(node)
+            else:
+                for scope in scopes[::-1]:
+                    if node.name in scope.subs:
+                        newname = scope.subs[node.name]
+                        if newname:
+                            node.name = newname
 
-        if hasattr(node, "body"):
+        if hasattr(node, "body") and node.body:
             scopes.append(Scope([]))
 
         if node.type == Syntax.FunctionExpression:
