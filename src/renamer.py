@@ -102,18 +102,72 @@ class IdVisitor(esprima.NodeVisitor):
 
 IdVisitor().visit(ast)
 
-print("names before:", allnames)
+class Xref:
+    def __init__(self, caller, lineno):
+        self.caller = caller
+        self.lineno = lineno
 
-class Scope:
-    def __init__(self, nodes):
-        self.nodes = nodes
-        self.subs = {}
-        self.lefts = set()
+class Function:
+    def __init__(self, name):
+        self.name = name
+        self.xrefs = []
+        self.isCreatorUknown = False
 
-    def __repr__(self):
-        return f"Scope(\n  {self.nodes}\n  {self.subs}\n)"
+def get_funcs():
+    class Scope:
+        def __init__(self, funcname):
+            self.nodes = []
+            self.func = Function(funcname)
+
+    scopes = [Scope("! Global Scope")]
+    scopes[0].nodes.append(ast)
+
+    funcs = {}
+
+    while True:
+        # end of scope
+        while len(scopes) > 0 and len(scopes[-1].nodes) == 0:
+            scopes.pop()
+        if len(scopes) == 0:
+            break
+
+        node = scopes[-1].nodes.pop()
+
+        if node.type == Syntax.FunctionDeclaration \
+                or node.type == Syntax.FunctionExpression:
+            scopes.append(Scope(node.id.name))
+            funcs[node.id.name] = scopes[-1].func
+
+        elif node.type == Syntax.CallExpression:
+            if node.callee.type == Syntax.Identifier:
+                if not node.callee.name in funcs:
+                    funcs[node.callee.name] = Function(node.callee.name)
+                    funcs[node.callee.name].isCreatorUknown = True
+                funcs[node.callee.name].xrefs.append(Xref(scopes[-1].func, node.loc.start.line))
+            else:
+                # TODO handle this case?
+                pass
+
+        for attr in dir(node):
+            attr = getattr(node, attr)
+            if isinstance(attr, list):
+                if len(attr) > 0 and isinstance(attr[0], nodes.Node):
+                    scopes[-1].nodes += attr[::-1]
+            elif isinstance(attr, nodes.Node):
+                scopes[-1].nodes.append(attr)
+    return funcs
+
 
 def uniquify():
+    class Scope:
+        def __init__(self, nodes):
+            self.nodes = nodes
+            self.subs = {}
+            self.lefts = set()
+
+        def __repr__(self):
+            return f"Scope(\n  {self.nodes}\n  {self.subs}\n)"
+
     scopes = [Scope([ast])]
 
     while True:
@@ -185,7 +239,9 @@ def uniquify():
         if hasattr(node, "body") and node.body:
             scopes.append(Scope([]))
 
-        if node.type == Syntax.FunctionExpression:
+        # if its a function expression, its name only matters within its own scope
+        # so we create a substitution after making the new scope
+        elif node.type == Syntax.FunctionExpression:
             if hasattr(node, "id") and node.id:
                 subName(node)
 
@@ -220,7 +276,7 @@ def normalize():
     def newId():
         while True:
             global newIdCnt
-            name = f"fe_{newIdCnt}"
+            name = f"f_e_{newIdCnt}"
             newIdCnt += 1
             if not name in allnames:
                 break
@@ -270,8 +326,8 @@ def ai_add_comments(func):
                 {
                     "role": "user",
                     "content": f"Can you please add comments to the following JavaScript function? \
-                            Include a header with a general description of the function, arguments, \
-                            and return value. Don't comment every line.\n{code}\n",
+                            Include a few line comments and a header with a general description of the function, arguments, \
+                            and return value. Don't comment every line, and please ignore any nested functions.\n{code}\n",
                 },
             ],
             max_tokens=max_tokens,
@@ -292,7 +348,7 @@ def ai_add_comments(func):
 
 def ai_suggest_name(func):
     code = escodegen.generate(func, escodegen_config)
-    marker = "suggested name:"
+    marker = ">> "
     max_tokens = int(len(code) * 1.4 + 20)
     if max_tokens > OPENAI_MAX_TOKENS:
         print("Warning: Function is too big for ai to suggest name")
@@ -309,7 +365,6 @@ def ai_suggest_name(func):
             max_tokens=max_tokens,
             temperature=OPENAI_TEMPERATURE,
             )
-    print(f"\n\n\nres:\n\n{res}\n\n")
     name = res["choices"][0]["message"]["content"]
     start = name.rfind(marker)
     if start == -1:
@@ -323,39 +378,47 @@ def ai_suggest_name(func):
 uniquify()
 normalize()
 
-print("names after unqiue and normalize:", allnames)
+def add_comments(ast, funcs, do_xrefs):
+    nodestack = [ast]
 
-class FunctionCommentor(esprima.NodeVisitor):
+    while len(nodestack) > 0:
+        node = nodestack.pop()
 
-    def handle_function(self, func):
-        newast = ai_add_comments(func)
-        newfunc = newast.body[0]
-        func.params = newfunc.params
-        func.body = newfunc.body
-        if hasattr(newfunc, "leadingComments"):
-            func.leadingComments = newfunc.leadingComments
-        if hasattr(newfunc, "trailingComments"):
-            func.trailingComments = newfunc.trailingComments
+        if node.type == Syntax.FunctionDeclaration \
+                or node.type == Syntax.FunctionExpression:
+            newast = ai_add_comments(node)
+            newnode = newast.body[0]
+            node.params = newnode.params
+            node.body = newnode.body
+            if hasattr(newnode, "leadingComments"):
+                node.leadingComments = newnode.leadingComments
+            if hasattr(newnode, "trailingComments"):
+                node.trailingComments = newnode.trailingComments
 
-    def visit_FunctionDeclaration(self, node):
-        self.handle_function(node)
-        return super().visit_Object(node)
+            if do_xrefs:
+                func = funcs[node.id.name]
+                if len(func.xrefs) > 0:
+                    if not hasattr(node, "leadingComments") \
+                            or not node.leadingComments:
+                        node.leadingComments = []
+                    callers_cnt = {}
+                    for xref in func.xrefs:
+                        callers_cnt[xref.caller.name] = callers_cnt.get(xref.caller.name, 0) + 1
+                    comment = "*\n * xrefs {{{\n"
+                    comment += "".join(map(lambda x: f" *   {x}: {callers_cnt[x]}\n", callers_cnt))
+                    comment += " * }}}\n "
+                    node.leadingComments.append(nodes.BlockComment(comment))
 
-    def visit_AsyncFunctionDeclaration(self, node):
-        self.handle_function(node)
-        return super().visit_Object(node)
-
-    def visit_FunctionExpression(self, node):
-        self.handle_function(node)
-        return super().visit_Object(node)
-
-    def visit_AsyncFunctionExpression(self, node):
-        self.handle_function(node)
-        return super().visit_Object(node)
+        for sattr in dir(node):
+            attr = getattr(node, sattr)
+            if isinstance(attr, nodes.Node):
+                nodestack.append(attr)
+            elif isinstance(attr, list) and len(attr) > 0 and isinstance(attr[0], nodes.Node):
+                nodestack += attr
 
 class FunctionRenamer(esprima.NodeVisitor):
 
-    class IdentifierUpdater(esprima.NodeVisitor):
+    class PostProcessor(esprima.NodeVisitor):
         def __init__(self, subs, *args, **kwargs):
             self.subs = subs
             super().__init__(*args, **kwargs)
@@ -365,15 +428,34 @@ class FunctionRenamer(esprima.NodeVisitor):
                 node.name = self.subs[node.name]
             return super().visit_Object(node)
 
+    def __init__(self, funcs):
+        self.funcs = funcs
 
     def visit(self, ast, *args, **kwargs):
         self.subs = {}
         super().visit(ast, *args, **kwargs)
-        FunctionRenamer.IdentifierUpdater(self.subs).visit(ast)
+        FunctionRenamer.PostProcessor(self.subs).visit(ast)
 
-    def handle_function(self, func):
-        name = ai_suggest_name(func)
-        self.subs[func.id.name] = name
+    def handle_function(self, node):
+        # skip functions that already start with "F_".
+        # this allows the script to recognize manually named functions
+        if node.id.name.startswith("F_"):
+            return
+
+        func = self.funcs.pop(node.id.name)
+        prefix = "f_e_" if node.id.name.startswith("f_e_") else "f_"
+        name = prefix + ai_suggest_name(node)
+        name += f"_xref_{len(func.xrefs)}"
+        final_name = name
+        cnt = 1
+        while final_name in allnames:
+            cnt += 1
+            final_name = f"{name}_{cnt}"
+        allnames.add(final_name)
+        func.name = final_name
+        self.funcs[final_name] = func
+        self.subs[node.id.name] = final_name
+        node.id.name = final_name
 
     def visit_FunctionDeclaration(self, node):
         self.handle_function(node)
@@ -391,8 +473,9 @@ class FunctionRenamer(esprima.NodeVisitor):
         self.handle_function(node)
         return super().visit_Object(node)
 
-#FunctionCommentor().visit(ast)
-#FunctionRenamer().visit(ast)
+funcs = get_funcs()
+FunctionRenamer(funcs).visit(ast)
+add_comments(ast, funcs, do_xrefs=True)
 
 code = escodegen.generate(ast, escodegen_config)
 with open(sys.argv[2], "w") as f:
