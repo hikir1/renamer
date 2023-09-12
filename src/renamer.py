@@ -515,7 +515,7 @@ def main():
     doxrefs = False
     dodesc = False
     doline = False
-    docntxrefs = True
+    docntxrefs = False
     doainame = False
 
     # parse args
@@ -528,7 +528,30 @@ def main():
             elif arg == "--":
                 endflags = True
             elif arg == "-h" or arg == "--help":
-                print(f"Usage: {sys.argv[0]} [OPTION]... [INFILE [OUTFILE [FUNCTION]...]]")
+                print(f"Usage: {sys.argv[0]} [OPTION]... [INFILE [OUTFILE [FUNCTION]...]]"
+                        + '''
+
+Rename and add comments to obfuscated JavaScript functions. The input
+file INFILE can be a script or a module. With no INFILE or OUTFILE,
+or when INFILE or OUTFILE is -, read from standard input and write
+to standard output, respectively. A list of FUNCTIONs may be provided,
+either by name or line number, in which case changes will only affect
+those FUNCTIONs in the list. Following --, all arguments starting with a
+- will be treated as normal arguments.
+
+The options below may be used to select the desired behavior. By default,
+all arrow functions will be converted to function expressions, and all
+function definitions and function expressions will have a unique identifier:
+  -x, --list-xrefs     include a list of crossreferences before each function
+  -d, --description    include an ai generated header with a description
+  -l, --line-comments  include ai generated line comments within each function
+  -c, --cnt-xrefs      include the number of crossreferences in the function's name
+  -n, --ai-name        use ai to generate a more intuitive function name
+  -h, --help           show this help message and exit
+
+Project homepage: <https://github.com/hikir1/renamer>
+Report bugs to <https://github.com/hikir1/renamer/issues>
+                        ''')
                 return
             elif arg == "-x" or arg == "--list-xrefs":
                 doxrefs = not doxrefs
