@@ -8,11 +8,47 @@ import escodegen
 
 import openai
 import os
-openai.organization = "org-XfD8N76UJAj6sSTJEGHqa3eg"
+openai.organization = os.getenv("OPENAI_ORG")
 openai.api_key = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = "gpt-4"
 OPENAI_MAX_TOKENS = 8192
 OPENAI_TEMPERATURE = 0.2
+
+version = '''renamer 1.1.1
+License GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+
+Written by Richard Pawelkiewicz.'''
+
+usage = f"Usage: {sys.argv[0]} [OPTION]... [INFILE [OUTFILE [FUNCTION]...]]" + '''
+
+Rename and add comments to obfuscated JavaScript functions. The input
+file INFILE can be a script or a module. With no INFILE or OUTFILE,
+or when INFILE or OUTFILE is -, read from standard input and write
+to standard output, respectively. A list of FUNCTIONs may be provided,
+either by name or line number, in which case changes will only affect
+those FUNCTIONs in the list. Following --, all arguments starting with a
+- will be treated as normal arguments.
+
+The options below may be used to select the desired behavior. By default,
+all arrow functions will be converted to function expressions, and all
+function definitions and function expressions will have a unique identifier.
+
+Some of the options, namely -d, -l, and -n, require the organization and API
+key of a payed openai account. These can be provided by the OPENAI_ORGANIZATION
+and OPENAI_API_KEY environment variables, respectively.
+
+  -x, --list-xrefs      include a list of crossreferences before each function
+  -d, --description     include an ai generated header with a description
+  -l, --line-comments   include ai generated line comments within each function
+  -c, --cnt-xrefs       include the number of crossreferences in the function's name
+  -n, --ai-name         use ai to generate a more intuitive function name
+  -h, --help            show this help message and exit
+  -V, --version         show version information and exit
+
+Project homepage: <https://github.com/hikir1/renamer>
+Report bugs to <https://github.com/hikir1/renamer/issues>'''
 
 esprima_config = {
     "jsx": False,
@@ -527,32 +563,6 @@ def main():
                 argidx += 1
             elif arg == "--":
                 endflags = True
-            elif arg == "-h" or arg == "--help":
-                print(f"Usage: {sys.argv[0]} [OPTION]... [INFILE [OUTFILE [FUNCTION]...]]"
-                        + '''
-
-Rename and add comments to obfuscated JavaScript functions. The input
-file INFILE can be a script or a module. With no INFILE or OUTFILE,
-or when INFILE or OUTFILE is -, read from standard input and write
-to standard output, respectively. A list of FUNCTIONs may be provided,
-either by name or line number, in which case changes will only affect
-those FUNCTIONs in the list. Following --, all arguments starting with a
-- will be treated as normal arguments.
-
-The options below may be used to select the desired behavior. By default,
-all arrow functions will be converted to function expressions, and all
-function definitions and function expressions will have a unique identifier:
-  -x, --list-xrefs     include a list of crossreferences before each function
-  -d, --description    include an ai generated header with a description
-  -l, --line-comments  include ai generated line comments within each function
-  -c, --cnt-xrefs      include the number of crossreferences in the function's name
-  -n, --ai-name        use ai to generate a more intuitive function name
-  -h, --help           show this help message and exit
-
-Project homepage: <https://github.com/hikir1/renamer>
-Report bugs to <https://github.com/hikir1/renamer/issues>
-                        ''')
-                return
             elif arg == "-x" or arg == "--list-xrefs":
                 doxrefs = not doxrefs
             elif arg == "-d" or arg == "--description":
@@ -563,6 +573,12 @@ Report bugs to <https://github.com/hikir1/renamer/issues>
                 docntxrefs = not docntxrefs
             elif arg == "-n" or arg == "--ai-name":
                 doainame = not doainame
+            elif arg == "-h" or arg == "--help":
+                print(usage)
+                return
+            elif arg == "-V" or arg == "--version":
+                print(version)
+                return
             else:
                 error(f"invalid option '{arg}'\nTry {sys.argv[0]} --help for more information.")
         else:
@@ -573,6 +589,12 @@ Report bugs to <https://github.com/hikir1/renamer/issues>
             else:
                 includefuncs.add(arg)
             argidx += 1
+
+    if (dodesc or doline or doainame) \
+            and (not openai.organization or not openai.api_key):
+        error(f"--description, --line-comments, and --ai-name require \
+                an openai organization and API key to work.\n
+                Try {sys.argv[0]} --help for more information.")
 
     if infile:
         try:
