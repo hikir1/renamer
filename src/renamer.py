@@ -36,7 +36,7 @@ all arrow functions will be converted to function expressions, and all
 function definitions and function expressions will have a unique identifier.
 
 Some of the options, namely -d, -l, and -n, require the organization and API
-key of a payed openai account. These can be provided by the OPENAI_ORGANIZATION
+key of a payed openai account. These can be provided by the OPENAI_ORG
 and OPENAI_API_KEY environment variables, respectively.
 
   -x, --list-xrefs      include a list of crossreferences before each function
