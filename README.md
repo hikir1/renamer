@@ -1,7 +1,7 @@
 # renamer
 ## An RE Tool for JavaScript Function Renaming and Commenting
 
-Inspired by AGDCservices Ghidra script
+Inspired by AGDCservices
 [Preview_Function_Capabilities.py](https://github.com/AGDCservices/Ghidra-Scripts#preview_function_capabilitiespy),
 [Gepetto](https://github.com/JusticeRage/Gepetto/tree/main),
 and
@@ -37,10 +37,12 @@ Some of the options, namely `-d`, `-l`, and `-n`, require the organization and A
 key of a payed openai account. These can be provided by the `OPENAI_ORG`
 and `OPENAI_API_KEY` environment variables, respectively.
 
-`  -x, --list-xrefs      `include a list of crossreferences before each function  
-`  -d, --description     `include an ai generated header with a description  
-`  -l, --line-comments   `include ai generated line comments within each function  
-`  -c, --cnt-xrefs       `include the number of crossreferences in the function's name  
-`  -n, --ai-name         `use ai to generate a more intuitive function name  
-`  -h, --help            `show this help message and exit  
-`  -V, --version         `show version information and exit  
+| Option                | Description                                                  |
+|-----------------------|--------------------------------------------------------------|
+| `-x, --list-xrefs`    | include a list of crossreferences before each function       |
+| `-d, --description`   | include an ai generated header with a description            |
+| `-l, --line-comments` | include ai generated line comments within each function      |
+| `-c, --cnt-xrefs`     | include the number of crossreferences in the function's name |
+| `-n, --ai-name`       | use ai to generate a more intuitive function name            |
+| `-h, --help`          | show this help message and exit                              |
+| `-V, --version`       | show version information and exit                            |
