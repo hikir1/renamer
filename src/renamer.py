@@ -104,6 +104,18 @@ ITER_STOP = 0
 ITER_CONT = 1
 ITER_SKIP_CHILDREN = 2
 def iter_nodes(ast, prescope, postscope, initctx):
+    """
+    Visit every node of the AST, calling prescope
+    function before a new scope is added, if one is added,
+    and postscope only after a new scope is added.
+
+    :param nodes.Program ast: The abstract syntax tree, as returned by esprima
+    :param function prescope(nodes.Node, [Scope]) -> int: callback function called
+      for every node
+    :param function postscope(nodes.Node, [Scope]) -> int: callback function called
+      only after a new scope is added
+    :param {any: any} initctx: The starting value of scopes[0].ctx
+    """
     class Scope:
         def __init__(self):
             self.nodes = []
