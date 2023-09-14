@@ -421,7 +421,8 @@ def normalize(ast, allnames, includefuncs):
             if not name in allnames:
                 break
         allnames.add(name)
-        includefuncs.add(name)
+        if len(includefuncs) > 0:
+            includefuncs.add(name)
         return nodes.Identifier(name)
 
     while len(nodestack) > 0:
