@@ -105,11 +105,12 @@ ITER_CONT = 1
 ITER_SKIP_CHILDREN = 2
 def iter_nodes(ast, prescope, postscope, initctx):
     class Scope:
-        nodes = []
-        ctx = {}
+        def __init__(self):
+            self.nodes = []
+            self.ctx = {}
 
         def __repr__(self):
-            return f"Scope(\n  {self.nodes}\n  {self.ctx}\n)"
+            return f"Scope(\n  nodes: {self.nodes}\n  ctx: {self.ctx}\n)"
 
     scopes = [Scope()]
     scopes[0].nodes.append(ast)
@@ -346,7 +347,6 @@ def uniquify(ast, allnames, includefuncs):
                     or node.id.name in includefuncs \
                     or str(node.loc.start.line) in includefuncs:
                 subname(node, scopes[-1].ctx["subs"])
-                print(scopes[-1].ctx["subs"])
 
         elif node.type == Syntax.Identifier:
             # if id was reset, ignore
@@ -363,7 +363,6 @@ def uniquify(ast, allnames, includefuncs):
         return ITER_CONT
 
     def postscope(node, scopes):
-        print(f"scopes:\n{scopes}")
         scopes[-1].ctx["subs"] = {}
         scopes[-1].ctx["lefts"] = set()
 
