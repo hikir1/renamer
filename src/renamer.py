@@ -101,6 +101,13 @@ def warning(msg, *args, **kwargs):
     print(f"{sys.argv[0]}: {msg}", *args, file=sys.stderr, **kwargs)
 
 def process_comments(ast):
+    """
+    After parsing the code with esprima, take the list of comments
+    and attach them to the correct node as leading or trailing comments,
+    as understood by escodegen.
+
+    :param ast: The abstract syntax tree, as returned by esprima
+    """
     for comment in ast.comments:
         line = comment.loc.start
         nodes = list(ast.body)
@@ -593,7 +600,7 @@ def main():
     if (dodesc or doline or doainame) \
             and (not openai.organization or not openai.api_key):
         error(f"--description, --line-comments, and --ai-name require \
-                an openai organization and API key to work.\n
+                an openai organization and API key to work.\n \
                 Try {sys.argv[0]} --help for more information.")
 
     if infile:
