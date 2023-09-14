@@ -100,53 +100,131 @@ def error(msg, *args, **kwargs):
 def warning(msg, *args, **kwargs):
     print(f"{sys.argv[0]}: {msg}", *args, file=sys.stderr, **kwargs)
 
+ITER_STOP = 0
+ITER_CONT = 1
+ITER_SKIP_CHILDREN = 2
+def iter_nodes(ast, prescope, postscope, initctx):
+    class Scope:
+        nodes = []
+        ctx = {}
+
+        def __repr__(self):
+            return f"Scope(\n  {self.nodes}\n  {self.ctx}\n)"
+
+    scopes = [Scope()]
+    scopes[0].nodes.append(ast)
+    scopes[0].ctx = initctx
+
+    while True:
+        # end of scope
+        while len(scopes) > 0 and len(scopes[-1].nodes) == 0:
+            scopes.pop()
+        if len(scopes) == 0:
+            break
+
+        node = scopes[-1].nodes.pop()
+
+        if prescope:
+            ret = prescope(node, scopes)
+            if ret == ITER_STOP:
+                break
+            elif ret == ITER_SKIP_CHILDREN:
+                continue
+
+        # beginning of new scope
+        if hasattr(node, "body") and node.body:
+            scopes.append(Scope())
+            if postscope:
+                ret = postscope(node, scopes)
+                if ret == ITER_STOP:
+                    break
+                elif ret == ITER_SKIP_CHILDREN:
+                    continue
+
+        # find all subnodes
+        for attr in dir(node):
+            attr = getattr(node, attr)
+            if isinstance(attr, list):
+                if len(attr) > 0 and isinstance(attr[0], nodes.Node):
+                    scopes[-1].nodes += attr[::-1]
+            elif isinstance(attr, nodes.Node):
+                scopes[-1].nodes.append(attr)
+
+
 def process_comments(ast):
     """
     After parsing the code with esprima, take the list of comments
     and attach them to the correct node as leading or trailing comments,
     as understood by escodegen.
 
-    :param ast: The abstract syntax tree, as returned by esprima
+    :param nodes.Program ast: The abstract syntax tree, as returned by esprima
     """
     for comment in ast.comments:
         line = comment.loc.start
-        nodes = list(ast.body)
-        while True:
-            node = nodes.pop(0)
+
+        def prescope(node, scopes):
+            # Skip the first node, bc for some reason it starts
+            # at the first line of code, after any comments.
+            # We want to add any preceding comments to the first node
+            # inside the program.
+            if node.type == Syntax.Program:
+                return ITER_CONT
+
+            # If this is the first node beyond the comment,
+            # add it as a leading comment
             if comment.range[0] < node.range[0]:
                 if not node.leadingComments:
                     node.leadingComments = []
                 node.leadingComments.append(comment)
-                break
+                return ITER_STOP
+
+            # If the comment appears within this node and it has
+            # no child nodes, or if it appears after this node
+            # and there are no more nodes after this one in the
+            # current scope, add it as a trailing comment
             elif (comment.range[0] > node.range[0] \
                     and comment.range[0] < node.range[1] \
                     and (not hasattr(node, "body") or node.body == [])) \
                     or (comment.range[0] > node.range[1] and
-                            (len(nodes) == 0 or comment.loc.start.line == node.loc.end.line)):
+                            (len(scopes[-1].nodes) == 0 or comment.loc.start.line == node.loc.end.line)):
                 if not node.trailingComments:
                     node.trailingComments = []
                 node.trailingComments.append(comment)
-                break
-            elif comment.range[0] > node.range[0]:
-                if comment.range[0] < node.range[1]:
-                    if isinstance(node.body, list):
-                        nodes = list(node.body)
-                    else:
-                        nodes = [node.body]
+                return ITER_STOP
 
-class IdVisitor(esprima.NodeVisitor):
-    def __init__(self, *args, **kwargs):
-        self.allnames = set()
-        super().__init__(*args, **kwargs)
-    def visit(self, ast, *args, **kwargs):
-        super().visit(ast, *args, **kwargs)
-        return self.allnames
-    def visit_Identifier(self, id):
-        self.allnames.add(id.name)
-        return self.visit_Object(id)
-    def visit_LabeledStatement(self, statement):
-        self.allnames.add(statement.label)
-        return self.visit_Object(statement)
+            # If the comment appears after this node, we will
+            # probably go on to the next one
+            return ITER_CONT
+
+        def postscope(node, scopes):
+            if node.type == Syntax.Program:
+                return ITER_CONT
+            # if the comment appears completely after this scope,
+            # skip it
+            if comment.loc.start.line > node.loc.end.line:
+                scopes.pop()
+            return ITER_CONT
+
+        iter_nodes(ast, prescope, postscope, initctx={})
+
+def get_allnames(ast):
+    """
+    Retrieve a set of all indentifiers used in the program
+
+    :param nodes.Program ast: The abstract syntax tree, as returned by esprima
+    :return set(str): set of identifier names
+    """
+
+    allnames = set()
+
+    def prescope(node, scopes):
+        if node.type == Syntax.Identifier:
+            allnames.add(node.name)
+        return ITER_CONT
+
+    iter_nodes(ast, prescope, None, initctx={})
+
+    return allnames
 
 class Xref:
     def __init__(self, caller, lineno):
@@ -160,144 +238,146 @@ class Function:
         self.isCreatorUnkown = False
 
 def get_funcs(ast):
-    class Scope:
-        def __init__(self, funcname):
-            self.nodes = []
-            self.func = Function(funcname)
+    """
+    Gather information on all functions.
 
-    scopes = [Scope("! Global Scope")]
-    scopes[0].nodes.append(ast)
+    :param nodes.Program ast: The abstract syntax tree, as returned by esprima
+    :return {str: Function}: A dictionary mapping function names to function objects
+    """
 
     funcs = {}
 
-    while True:
-        # end of scope
-        while len(scopes) > 0 and len(scopes[-1].nodes) == 0:
-            scopes.pop()
-        if len(scopes) == 0:
-            break
-
-        node = scopes[-1].nodes.pop()
-
-        if node.type == Syntax.FunctionDeclaration \
-                or node.type == Syntax.FunctionExpression:
-            scopes.append(Scope(node.id.name))
-            funcs[node.id.name] = scopes[-1].func
-
-        elif node.type == Syntax.CallExpression:
+    # When a function is called, include the current function in
+    # its cross reference list. Ignore call expressions when the
+    # callee is anything but a simple identifier.
+    def prescope(node, scopes):
+        if node.type == Syntax.CallExpression:
             if node.callee.type == Syntax.Identifier:
                 if not node.callee.name in funcs:
                     funcs[node.callee.name] = Function(node.callee.name)
                     funcs[node.callee.name].isCreatorUnknown = True
-                funcs[node.callee.name].xrefs.append(Xref(scopes[-1].func, node.loc.start.line))
+                funcs[node.callee.name].xrefs.append(Xref(scopes[-1].ctx["func"], node.loc.start.line))
             else:
                 # TODO handle this case?
                 pass
+        return ITER_CONT
 
-        for attr in dir(node):
-            attr = getattr(node, attr)
-            if isinstance(attr, list):
-                if len(attr) > 0 and isinstance(attr[0], nodes.Node):
-                    scopes[-1].nodes += attr[::-1]
-            elif isinstance(attr, nodes.Node):
-                scopes[-1].nodes.append(attr)
+    # When a new function is entered, add it to the scope. Otherwise,
+    # use the function from the previous scope.
+    def postscope(node, scopes):
+        if node.type == Syntax.FunctionDeclaration \
+                or node.type == Syntax.FunctionExpression:
+            scopes[-1].ctx["func"] = Function(node.id.name)
+            funcs[node.id.name] = scopes[-1].ctx["func"]
+        else:
+            scopes[-1].ctx["func"] = scopes[-2].ctx["func"]
+        return ITER_CONT
+
+    iter_nodes(ast, prescope, postscope, initctx={"func": Function("! Global Scope")})
+
     return funcs
 
 def uniquify(ast, allnames, includefuncs):
-    class Scope:
-        def __init__(self, nodes):
-            self.nodes = nodes
-            self.subs = {}
-            self.lefts = set()
+    """
+    Ensure all function identifiers are unique.
 
-        def __repr__(self):
-            return f"Scope(\n  {self.nodes}\n  {self.subs}\n)"
+    :param nodes.Program ast: The abstract syntax tree, as returned by esprima
+    :param set(str) allnames: Set of all existing names, as returned by get_allnames()
+    :param set(str) includefuncs: Names and/or line numbers of functions to consider.
+      If blank, all named functions are considered.
+    """
 
-    scopes = [Scope([ast])]
+    #TODO sub names after functions have been processed
 
-    while True:
-        # end of scope
-        while len(scopes) > 0 and len(scopes[-1].nodes) == 0:
-            scopes.pop()
-        if len(scopes) == 0:
-            break
+    # ensure name is unique
+    def subname(node, subs):
+        prefix = "f_"
+        name = f"{prefix}{node.id.name}"
+        num = 1
+        # add random digits to the end of the identifier until it is unique
+        while name in allnames:
+            num += 1
+            name = f"{prefix}{node.id.name}{num}"
+        # subtitute all uses of this identifier in the current scope, at least until shadowed
+        subs[node.id.name] = name
+        allnames.add(name)
+        if len(includefuncs) > 0:
+            includefuncs.add(name)
+        node.id.name = name
 
-        node = scopes[-1].nodes.pop()
-
-        def subName(node):
-            prefix = "f_"
-            name = f"{prefix}{node.id.name}"
-            num = 1
-            # add random digits to the end of the identifier until it is unique
-            while name in allnames:
-                num += 1
-                name = f"{prefix}{node.id.name}{num}"
-            # subtitute all uses of this identifier in the current scope, at least until shadowed
-            scopes[-1].subs[node.id.name] = name
-            allnames.add(name)
-            if len(includefuncs) > 0:
-                includefuncs.add(name)
-            node.id.name = name
-
+    def prescope(node, scopes):
+        # make sure to process right side of assignment before
+        # resetting id association, if applicable
         if node.type == Syntax.AssignmentExpression \
                 or node.type == Syntax.AssignmentPattern:
             if node.left.type == Syntax.Identifier:
                 for scope in scopes[::-1]:
-                    if node.left.name in scope.subs:
+                    if node.left.name in scope.ctx["subs"]:
                         # record left as resetting id association
-                        scopes[-1].lefts.add(node.id)
+                        scopes[-1].ctx["lefts"].add(node.id)
                         break
             # make sure right is processed before left
             scopes[-1].nodes += [node.left, node.right]
-            continue
+            return ITER_SKIP_CHILDREN
 
+        # make sure to process initializer before
+        # resetting id association, if applicable
         elif node.type == Syntax.VariableDeclarator:
             for scope in scopes[::-1]:
-                if node.id.name in scope.subs:
+                if node.id.name in scope.ctx["subs"]:
                     # record left as resetting id association
-                    scopes[-1].lefts.add(node.id)
+                    scopes[-1].ctx["lefts"].add(node.id)
                     break
             # make sure right is processed before left (if it exists)
             scopes[-1].nodes.append(node.id)
             if hasattr(node, "init") and node.init:
                 scopes[-1].nodes.append(node.init)
-            continue
+            return ITER_SKIP_CHILDREN
 
+        # only consider the object of a member expression.
+        # ignore the property.
         elif node.type == Syntax.MemberExpression:
-            # only consider the object. ignore the property.
             scopes[-1].nodes.append(node.object)
-            continue
+            return ITER_SKIP_CHILDREN
 
+        # uniquify the function name of a function declaration
         elif node.type == Syntax.FunctionDeclaration:
             if len(includefuncs) == 0 \
                     or node.id.name in includefuncs \
                     or str(node.loc.start.line) in includefuncs:
-                subName(node)
+                subname(node, scopes[-1].ctx["subs"])
+                print(scopes[-1].ctx["subs"])
 
         elif node.type == Syntax.Identifier:
             # if id was reset, ignore
-            if node in scopes[-1].lefts:
-                scopes[-1].subs[node.name] = None
-                scopes[-1].lefts.remove(node)
+            if node in scopes[-1].ctx["lefts"]:
+                scopes[-1].ctx["subs"][node.name] = None
+                scopes[-1].ctx["lefts"].remove(node)
+            # otherwise, substitute
             else:
                 for scope in scopes[::-1]:
-                    if node.name in scope.subs:
-                        newname = scope.subs[node.name]
-                        if newname:
-                            node.name = newname
+                    newname = scope.ctx["subs"].get(node.name, None)
+                    if newname:
+                        node.name = newname
+                        break
+        return ITER_CONT
 
-        if hasattr(node, "body") and node.body:
-            scopes.append(Scope([]))
+    def postscope(node, scopes):
+        print(f"scopes:\n{scopes}")
+        scopes[-1].ctx["subs"] = {}
+        scopes[-1].ctx["lefts"] = set()
+
 
         # if its a function expression, its name only matters within its own scope
         # so we create a substitution after making the new scope
-        elif node.type == Syntax.FunctionExpression:
+        if node.type == Syntax.FunctionExpression:
             if hasattr(node, "id") and node.id:
                 if len(includefuncs) == 0 \
                         or node.id.name in includefuncs \
                         or str(node.loc.start.line) in includefuncs:
-                    subName(node)
+                    subname(node, scopes[-1].ctx["subs"])
 
+        # check for overlapping parameter names
         if node.type == Syntax.FunctionDeclaration \
                 or node.type == Syntax.FunctionExpression \
                 or node.type == Syntax.ArrowFunctionExpression \
@@ -310,17 +390,13 @@ def uniquify(ast, allnames, includefuncs):
                     assert(param.left.type == Syntax.Identifier)
                     name = param.left.name
                 for scope in scopes:
-                    if name in scope.subs:
-                        scopes[-1].subs[name] = None
+                    if name in scope.ctx["subs"]:
+                        scopes[-1].ctx["subs"][name] = None
                         break
 
-        for attr in dir(node):
-            attr = getattr(node, attr)
-            if isinstance(attr, list):
-                if len(attr) > 0 and isinstance(attr[0], nodes.Node):
-                    scopes[-1].nodes += attr[::-1]
-            elif isinstance(attr, nodes.Node):
-                scopes[-1].nodes.append(attr)
+        return ITER_CONT
+
+    iter_nodes(ast, prescope, postscope, initctx={"subs": {}, "lefts": set()})
 
 def normalize(ast, allnames, includefuncs):
     nodestack = [ast]
@@ -627,7 +703,7 @@ def main():
     ast = parse(code, esprima_config)
 
     process_comments(ast)
-    allnames = IdVisitor().visit(ast)
+    allnames = get_allnames(ast)
 
     uniquify(ast, allnames, includefuncs)
     normalize(ast, allnames, includefuncs)
