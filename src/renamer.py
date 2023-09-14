@@ -409,9 +409,9 @@ def uniquify(ast, allnames, includefuncs):
 
     iter_nodes(ast, prescope, postscope, initctx={"subs": {}, "lefts": set()})
 
+new_id_cnt = 0
 def normalize(ast, allnames, includefuncs):
     nodestack = [ast]
-    new_id_cnt = 0
 
     def new_id():
         while True:
