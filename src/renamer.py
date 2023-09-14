@@ -180,7 +180,7 @@ def process_comments(ast):
             # at the first line of code, after any comments.
             # We want to add any preceding comments to the first node
             # inside the program.
-            if node.type == Syntax.Program:
+            if node.type == Syntax.Program or node.type == "Line":
                 return ITER_CONT
 
             # If this is the first node beyond the comment,
