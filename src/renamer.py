@@ -1,10 +1,13 @@
 #!/bin/env python
 
 import sys
+import time
 import esprima
 from esprima.syntax import Syntax
 from esprima import nodes
 import escodegen
+
+SLEEP = False
 
 import openai
 import os
@@ -280,8 +283,9 @@ def get_funcs(ast):
     def postscope(node, scopes):
         if node.type == Syntax.FunctionDeclaration \
                 or node.type == Syntax.FunctionExpression:
-            scopes[-1].ctx["func"] = Function(node.id.name)
-            funcs[node.id.name] = scopes[-1].ctx["func"]
+            name = "! Anonymous" if not node.id else node.id.name
+            scopes[-1].ctx["func"] = Function(name)
+            funcs[name] = scopes[-1].ctx["func"]
         else:
             scopes[-1].ctx["func"] = scopes[-2].ctx["func"]
         return ITER_CONT
@@ -496,15 +500,17 @@ def ai_add_comments(func, dodesc, doline):
         code = code[start2 + 1:end]
     newast = esprima.parseScript(code, esprima_config)
     process_comments(newast)
+    if SLEEP:
+        time.sleep(20)
     return newast.body[0]
 
-def ai_suggest_name(func):
+def ai_suggest_name(func, oldname):
     code = escodegen.generate(func, escodegen_config)
     marker = ">> "
     max_tokens = int(len(code) * 1.4 + 20)
     if max_tokens > OPENAI_MAX_TOKENS:
         warning("function is too big for ai to suggest name")
-        return func.id.name
+        return oldname
     res = openai.ChatCompletion.create(
             model=OPENAI_MODEL,
             messages=[
@@ -524,6 +530,8 @@ def ai_suggest_name(func):
     name = name[start + len(marker):]
     name = name.lstrip().split()[0]
     name.strip("`'\"()")
+    if SLEEP:
+        time.sleep(20)
     return name
 
 def add_comments(ast, funcs, includefuncs, doxrefs, dodesc, doline):
@@ -531,11 +539,12 @@ def add_comments(ast, funcs, includefuncs, doxrefs, dodesc, doline):
 
     while len(nodestack) > 0:
         node = nodestack.pop()
+        name = "! Anonymous" if not node.id else node.id.name
 
         if node.type == Syntax.FunctionDeclaration \
                 or node.type == Syntax.FunctionExpression:
             if len(includefuncs) == 0 \
-                    or node.id.name in includefuncs \
+                    or name in includefuncs \
                     or str(node.loc.start.line) in includefuncs:
                 newnode = ai_add_comments(node, dodesc, doline)
                 node.params = newnode.params
@@ -546,7 +555,7 @@ def add_comments(ast, funcs, includefuncs, doxrefs, dodesc, doline):
                     node.trailingComments = newnode.trailingComments
 
                 if doxrefs:
-                    func = funcs[node.id.name]
+                    func = funcs[name]
                     if len(func.xrefs) > 0:
                         if not hasattr(node, "leadingComments") \
                                 or not node.leadingComments:
@@ -593,19 +602,20 @@ class FunctionRenamer(esprima.NodeVisitor):
     def handle_function(self, node):
         # skip functions that already start with "F_".
         # this allows the script to recognize manually named functions
-        if node.id.name.startswith("F_"):
+        oldname = "! Anonymous" if not node.id else node.id.name
+        if oldname.startswith("F_"):
             return
         if len(self.includefuncs) > 0:
-            if not node.id.name in self.includefuncs \
+            if not oldname in self.includefuncs \
                     and not str(node.loc.start.line) in self.includefuncs:
                 return
 
-        func = self.funcs.pop(node.id.name)
+        func = self.funcs.pop(oldname)
+        prefix = "f_e_" if oldname.startswith("f_e_") else "f_"
         if self.doainame:
-            prefix = "f_e_" if node.id.name.startswith("f_e_") else "f_"
-            name = prefix + ai_suggest_name(node)
+            name = prefix + ai_suggest_name(node, oldname)
         else:
-            name = node.id.name
+            name = prefix + oldname
         if self.docntxrefs:
             name += f"_xref_{len(func.xrefs)}"
         final_name = name
@@ -616,7 +626,7 @@ class FunctionRenamer(esprima.NodeVisitor):
         self.allnames.add(final_name)
         func.name = final_name
         self.funcs[final_name] = func
-        self.subs[node.id.name] = final_name
+        self.subs[oldname] = final_name
         node.id.name = final_name
         if len(self.includefuncs) > 0:
             self.includefuncs.add(final_name)
